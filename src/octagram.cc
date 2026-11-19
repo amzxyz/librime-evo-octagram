@@ -18,7 +18,7 @@ struct GrammarConfig {
   double rear_penalty = -18;
 };
 
-const ResourceType kGramDbType = {"gram_db", "", ".gram"};
+const ResourceType kGramDbType = {"gram_db", "", ".gramx"};
 const string kGrammarDefaultLanguage = "zh-hant";
 
 Octagram::Octagram(Config* config, OctagramComponent* component)
@@ -112,8 +112,8 @@ double Octagram::Query(const string& context,
   }
   double result = config_->non_collocation_penalty;
   GramDb::Match matches[GramDb::kMaxResults];
-  int n = (std::min)(grammar::kMaxEncodedUnicode,
-                     config_->collocation_max_length - 1);
+  int n =
+      (std::min)(grammar::kMaxQueryLength, config_->collocation_max_length - 1);
   int context_len = 0;
   string context_query = grammar::encode(
       last_n_unicode(context, n, context_len),

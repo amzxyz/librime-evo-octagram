@@ -6,9 +6,16 @@ namespace rime {
 namespace grammar {
 
 string encode(const char* begin, const char* end) {
-  char encoded_str[kMaxEncodedUnicode * 4];
+  char encoded_str[32];
   char* e = encoded_str;
-  for (auto p = begin; p < end; ) {
+  string result;
+  for (auto p = begin; p < end;) {
+    // One Unicode code point needs at most four encoded bytes. Keep short
+    // queries on the stack, and append chunks when compiling longer keys.
+    if (sizeof(encoded_str) - size_t(e - encoded_str) < 4) {
+      result.append(encoded_str, e);
+      e = encoded_str;
+    }
     uint32_t u = utf8::unchecked::next(p);
     if (u < 0x80) {
       if (u == 0) {
@@ -39,12 +46,14 @@ string encode(const char* begin, const char* end) {
       }
     }
   }
-  return string(encoded_str, e);
+  if (result.empty())
+    return string(encoded_str, e);
+  result.append(encoded_str, e);
+  return result;
 }
 
 inline static const char* advance(const char* p) {
-  return p + ((*p & 0x80) == 0 ? 1 :
-              (*p & 0xF0) == 0xE0 ? (*p & 0x0F) + 1 : 2);
+  return p + ((*p & 0x80) == 0 ? 1 : (*p & 0xF0) == 0xE0 ? (*p & 0x0F) + 1 : 2);
 }
 
 const char* next_unicode(const char* p) {

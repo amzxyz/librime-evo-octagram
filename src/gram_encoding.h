@@ -6,7 +6,8 @@
 namespace rime {
 namespace grammar {
 
-constexpr int kMaxEncodedUnicode = 8;
+// Bound scoring work independently of the length of keys stored in the model.
+constexpr int kMaxQueryLength = 8;
 
 string encode(const char* begin, const char* end);
 inline string encode(const string& utf8_str) {
