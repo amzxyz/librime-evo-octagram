@@ -40,7 +40,7 @@ void Usage() {
       << "  --language LANG    language suffix (default: zh-hans)\n"
       << "Adjacent files with the same region name and weight share a "
          "section.\n"
-      << "Output: NAME-LANG.gram; later sections override duplicate keys.\n";
+      << "Output: NAME-LANG.dlm; later sections override duplicate keys.\n";
 }
 
 bool ParseWeight(const string& text, double* weight) {

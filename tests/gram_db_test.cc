@@ -12,7 +12,7 @@ using namespace rime;
 
 class GramDbTest : public testing::Test {
  protected:
-  const path model{"octagram-sections-test.gram"};
+  const path model{"octagram-sections-test.dlm"};
   void TearDown() override { std::filesystem::remove(model); }
   static int Score(double weight) {
     return (std::max)(0, int(std::log(weight) * GramDb::kValueScale));

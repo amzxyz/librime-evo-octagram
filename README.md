@@ -1,6 +1,6 @@
-# Octagram · 分区压缩 Darts 语言模型
+# Octagram DLM · 分区词典语言模型
 
-基于 [librime-evo](https://github.com/amzxyz/librime-evo) 的 Octagram 语言模型插件。使用 Darts Double-Array 存储连续文本匹配关系，支持**命名分区、公共权重压缩和逐词权重**。模型统一编译为一个可内存映射的 `.gram` 文件。
+基于 [librime-evo](https://github.com/amzxyz/librime-evo) 的词典语言模型（Dictionary Language Model，简称 DLM）。使用 Darts Double-Array 存储连续文本匹配关系，支持**命名分区、公共权重压缩和逐词权重**。模型统一编译为一个可内存映射的 `.dlm` 文件。
 
 ## 设计
 
@@ -32,7 +32,7 @@
 build_grammar --section weighted -t precise.txt --section collocations -t four.txt -w 500000 -t extra.txt -w 500000 --section long_phrases -t long.txt -w 5000000000 --name wanxiang-lts --language zh-hans
 ```
 
-生成 `wanxiang-lts-zh-hans.gram`，输出在当前工作目录。构建成功时标准输出模型的绝对路径；`--name` 和 `--language` 的默认值分别是 `wanxiang-lts`、`zh-hans`。
+生成 `wanxiang-lts-zh-hans.dlm`，输出在当前工作目录。构建成功时标准输出模型的绝对路径；`--name` 和 `--language` 的默认值分别是 `wanxiang-lts`、`zh-hans`。
 
 | 分区 | 示例文件 | 权重策略 |
 | --- | --- | --- |
@@ -72,7 +72,7 @@ build_grammar --section weighted -t precise.txt --section collocations -t four.t
 
 ## Rime 配置
 
-将生成的 `wanxiang-lts-zh-hans.gram` 放入 Rime 用户目录，在方案中配置：
+将生成的 `wanxiang-lts-zh-hans.dlm` 放入 Rime 用户目录，在方案中配置：
 
 ```yaml
 grammar:
@@ -96,7 +96,7 @@ grammar:
 
 ## 集成与测试
 
-二进制格式：`Rime::DartsGrammar/3`，模型后缀 `.gram`。需使用本仓库提供的配套插件读取。主内核需要支持 `Grammar::Component::CreateContextual` 及 Poet 的对应调用，接入补丁见 [`patches/librime-grammar-scopes.patch`](patches/librime-grammar-scopes.patch)。
+模型文件使用 `.dlm` 后缀，二进制格式标识仍为 `Rime::DartsGrammar/3`（只更换文件名后缀，不修改数据布局与版本）。旧 `.gram` 文件可直接重命名为 `.dlm`，无需为后缀变更重新训练或构建。需使用本仓库提供的配套插件读取。主内核需要支持 `Grammar::Component::CreateContextual` 及 Poet 的对应调用，接入补丁见 [`patches/librime-grammar-scopes.patch`](patches/librime-grammar-scopes.patch)。
 
 ```sh
 ctest -R 'octagram_test|octagram_cli|grammar_scope_test' --output-on-failure

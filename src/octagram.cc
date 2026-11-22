@@ -18,7 +18,7 @@ struct GrammarConfig {
   double rear_penalty = -18;
 };
 
-const ResourceType kGramDbType = {"gram_db", "", ".gram"};
+const ResourceType kGramDbType = {"gram_db", "", ".dlm"};
 const string kGrammarDefaultLanguage = "zh-hant";
 
 Octagram::Octagram(Config* config,
