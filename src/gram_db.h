@@ -3,6 +3,7 @@
 
 #include <darts.h>
 #include <optional>
+#include <string_view>
 #include <rime/resource.h>
 #include <rime/dict/mapped_file.h>
 
@@ -10,16 +11,20 @@ namespace rime {
 
 namespace grammar {
 
+inline constexpr char kModelSuffix[] = ".dlm";
+
 struct Metadata {
   char format[32];
   uint64_t section_count;
-  uint64_t names_bytes;
+  uint64_t text_bytes;
 };
 
 struct SectionMetadata {
   uint64_t array_bytes;
   int64_t constant_value;
   uint64_t name_bytes;
+  uint64_t description_bytes;
+  double constant_weight;
 };
 
 }  // namespace grammar
@@ -29,7 +34,9 @@ class GramDb : public MappedFile {
   struct Section {
     Darts::DoubleArray trie;
     int constant_value = -1;
+    double constant_weight = 0;
     string name;
+    string description;
   };
 
  public:
@@ -43,6 +50,7 @@ class GramDb : public MappedFile {
     vector<pair<string, double>> weighted_entries;
     std::optional<double> constant_weight;
     string name = "default";
+    string description = {};
   };
 
   class Builder {
@@ -63,11 +71,11 @@ class GramDb : public MappedFile {
   // Consume compiled sections and replace their buffers with the mapped image.
   bool Build(Builder& builder);
   void Close();
-  int Lookup(const string& context,
-             const string& word,
+  int Lookup(std::string_view context,
+             std::string_view word,
              Match results[kMaxResults]) const;
-  int Lookup(const string& context,
-             const string& word,
+  int Lookup(std::string_view context,
+             std::string_view word,
              Match results[kMaxResults],
              const SectionList& sections) const;
   bool SelectSections(const vector<string>& names, SectionList* sections) const;
@@ -75,6 +83,7 @@ class GramDb : public MappedFile {
 
  private:
   void IndexSections();
+  void LogSections() const;
   vector<the<Section>> sections_;
   SectionList all_sections_;
   map<string, SectionList> sections_by_name_;

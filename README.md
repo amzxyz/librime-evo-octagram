@@ -1,6 +1,6 @@
-# Octagram DLM · 分区词典语言模型
+# Evo Octagram v2
 
-基于 [librime-evo](https://github.com/amzxyz/librime-evo) 的词典语言模型（Dictionary Language Model，简称 DLM）。使用 Darts Double-Array 存储连续文本匹配关系，支持**命名分区、公共权重压缩和逐词权重**。模型统一编译为一个可内存映射的 `.dlm` 文件。
+基于 [librime-evo](https://github.com/amzxyz/librime-evo) 的 Octagram 语言模型插件。使用 Darts Double-Array 存储连续文本匹配关系，支持**命名分区、公共权重压缩和逐词权重**。模型统一编译为一个可内存映射的 `.dlm`（Dictionary Language Model）文件。
 
 ## 设计
 
@@ -10,10 +10,12 @@
 
 | 模式 | 构建参数 | 存储方式 | 适用数据 |
 | --- | --- | --- | --- |
-| 公共权重 | `-t FILE -w WEIGHT` | 词条终端值统一为 0，整个物理段只保存一份 log 权重 | 大规模固定权重词组 |
+| 公共权重 | `-t FILE -w WEIGHT` | 词条终端值统一为 0，每段保存原始权重和整数 log 评分 | 大规模固定权重词组 |
 | 逐词权重 | `-t FILE` | 每个词条保存自己的整数 log 评分 | 需要保留频次差异的词组 |
 
 权重在**构建时**换算为整数 log 评分并写入模型，查询时直接使用；公共权重段不再为每条词分别存储相同的分数。Darts 索引与公共终端值有利于降低模型体积，具体压缩率取决于数据分布。
+
+分区名称由 `--section NAME` 自定义，支持中文和英文。下面的名称只是示例，方案中的 `grammar/contextual_sections` 使用构建时写入的名称。
 
 相邻输入在分区名与权重模式、公共权重一致时合并为同一物理段。段内重复词条去重（逐词权重保留最大频次）；**跨段相同词条以后面的段为准**。
 
@@ -29,7 +31,11 @@
 ## 构建模型
 
 ```sh
-build_grammar --section weighted -t precise.txt --section collocations -t four.txt -w 500000 -t extra.txt -w 500000 --section long_phrases -t long.txt -w 5000000000 --name wanxiang-lts --language zh-hans
+build_grammar --section weighted -m "保留各词原有频次" -t precise.txt \
+  --section collocations -m "四字 2+2 搭配，用于联想" \
+  -t four.txt -w 500000 -t extra.txt -w 500000 \
+  --section long_phrases -m "长词固定搭配" -t long.txt -w 5000000000 \
+  --name wanxiang-lts --language zh-hans
 ```
 
 生成 `wanxiang-lts-zh-hans.dlm`，输出在当前工作目录。构建成功时标准输出模型的绝对路径；`--name` 和 `--language` 的默认值分别是 `wanxiang-lts`、`zh-hans`。
@@ -63,6 +69,7 @@ build_grammar --section weighted -t precise.txt --section collocations -t four.t
 | 参数 | 作用 |
 | --- | --- |
 | `--section NAME` | 指定后续输入文件的分区名称，默认 `default` |
+| `-m TEXT` | 给当前分区添加可选说明，写入该名称下每个物理段的文件头 |
 | `-t FILE` | 添加一个输入文件，按命令顺序处理 |
 | `-w WEIGHT` | 为紧邻的前一个 `-t` 文件指定公共频次 |
 | `--name NAME` | 指定模型名前缀 |
@@ -70,33 +77,46 @@ build_grammar --section weighted -t precise.txt --section collocations -t four.t
 
 每个使用公共权重的输入文件都需要各自指定 `-w`。输入文件的顺序决定跨段重复词条的覆盖优先级。
 
+### 从模型查看分区信息
+
+分区名、权重模式和 `-m` 说明在构建时写入 `.dlm` 文件头。Rime 加载模型时，INFO 日志按文件顺序列出各段信息。公共权重段还会显示原始权重和整数评分，逐词权重段显示 `weight=per-key`。
+
+如果原构建命令或随附说明找不到了，拿到 `.dlm` 就可以查看文件中保存的分区名、权重和用途说明。构建时省略 `-m` 的分区会显示空说明。
+
+```sh
+build_grammar --inspect wanxiang-lts-zh-hans.dlm
+```
+
+```text
+grammar section[1] name="collocations" weight=500000 score=131223 description="四字 2+2 搭配，用于联想"
+```
+
 ## Rime 配置
 
-将生成的 `wanxiang-lts-zh-hans.dlm` 放入 Rime 用户目录，在方案中配置：
+将 `wanxiang-lts-zh-hans.dlm` 放入 Rime 用户目录。`grammar/language` 填模型文件名，省略 `.dlm`。匹配参数和翻译器开关沿用万象方案默认值，下面的分区列表对应上面的构建示例。
 
 ```yaml
 grammar:
   language: wanxiang-lts-zh-hans
-  contextual_sections: [collocations]
-  collocation_max_length: 8
-  collocation_min_length: 3
+  contextual_sections: [collocations, long_phrases]
+  collocation_max_length: 6
+  collocation_min_length: 2
+  collocation_penalty: -14
+  non_collocation_penalty: -6
+  weak_collocation_penalty: -100
+  rear_penalty: -18
 
 translator:
-  contextual_suggestions: true
+  contextual_suggestions: false
 ```
 
-其中 `contextual_sections: [collocations]` 表示**只有 `collocations` 参与前文调频**，但整句内部仍使用全部分区。也可指定多个名称：
+万象默认关闭前文调频。启用时，将主翻译器的 `contextual_suggestions` 改为 `true`，并在 `contextual_sections` 中列出要参与调频的分区名。此例选中 `collocations` 和 `long_phrases`，整句内部评分仍使用全部分区。
 
-```yaml
-grammar:
-  contextual_sections: [collocations, weighted]
-```
-
-不设置或设置为空列表 `[]` 时，不启用前文调频；指定不存在的名称会禁用该视图，不回退到全模型。其他原有 Octagram 参数（`collocation_penalty`、`non_collocation_penalty`、`weak_collocation_penalty`、`rear_penalty` 等）仍按原方式配置。
+省略 `contextual_sections` 或将其设为 `[]` 时，前文调频关闭。如果列表引用了文件里不存在的名称，加载时会报错并禁用前文调频。可以用 `--inspect` 核对名称。
 
 ## 集成与测试
 
-模型文件使用 `.dlm` 后缀，二进制格式标识仍为 `Rime::DartsGrammar/3`（只更换文件名后缀，不修改数据布局与版本）。旧 `.gram` 文件可直接重命名为 `.dlm`，无需为后缀变更重新训练或构建。需使用本仓库提供的配套插件读取。主内核需要支持 `Grammar::Component::CreateContextual` 及 Poet 的对应调用，接入补丁见 [`patches/librime-grammar-scopes.patch`](patches/librime-grammar-scopes.patch)。
+Evo 将本项目固定在 `plugins/octagram`。在 Evo 根目录执行 `git submodule update --init --recursive`，配置 CMake 后构建 `build_grammar` 目标。该程序生成 `Rime::EvoGrammar/2` 格式的 `.dlm` 文件。
 
 ```sh
 ctest -R 'octagram_test|octagram_cli|grammar_scope_test' --output-on-failure

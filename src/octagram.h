@@ -1,15 +1,12 @@
 #ifndef RIME_OCTAGRAM_H_
 #define RIME_OCTAGRAM_H_
 
+#include <mutex>
 #include <rime/common.h>
 #include <rime/component.h>
-#include <rime/resource.h>
 #include <rime/gear/grammar.h>
 
 namespace rime {
-
-extern const ResourceType kGramDbType;
-extern const string kGrammarDefaultLanguage;
 
 class Config;
 class GramDb;
@@ -29,7 +26,7 @@ class Octagram : public Grammar {
  private:
   friend class OctagramComponent;
   the<GrammarConfig> config_;
-  GramDb* db_ = nullptr;
+  an<const GramDb> db_;
   vector<size_t> sections_;
 };
 
@@ -41,10 +38,11 @@ class OctagramComponent : public Grammar::Component {
   Octagram* Create(Config* config) override;
   Octagram* CreateContextual(Config* config) override;
 
-  GramDb* GetDb(const string& language);
+  an<const GramDb> GetDb(const string& language);
 
  private:
-  map<string, the<GramDb>> db_by_language_;
+  std::mutex db_mutex_;
+  map<string, weak<const GramDb>> db_by_language_;
 };
 
 }  // namespace rime

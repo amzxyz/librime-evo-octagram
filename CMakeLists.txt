@@ -28,17 +28,32 @@ if(BUILD_TEST)
   if(BUILD_SHARED_LIBS)
     target_compile_definitions(octagram_test PRIVATE RIME_IMPORTS)
   endif()
+  if(WIN32)
+    set_target_properties(octagram_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    if(MSVC)
+      target_compile_options(octagram_test PRIVATE /utf-8)
+    endif()
+  endif()
   add_test(NAME octagram_test COMMAND octagram_test)
   add_executable(grammar_scope_test tests/grammar_scope_test.cc)
   target_link_libraries(grammar_scope_test PRIVATE ${rime_library} ${rime_gears_library} ${GTEST_LIBRARIES})
   if(BUILD_SHARED_LIBS)
     target_compile_definitions(grammar_scope_test PRIVATE RIME_IMPORTS)
   endif()
+  if(WIN32)
+    set_target_properties(grammar_scope_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    if(MSVC)
+      target_compile_options(grammar_scope_test PRIVATE /utf-8)
+    endif()
+  endif()
   add_test(NAME grammar_scope_test COMMAND grammar_scope_test)
   if(TARGET build_grammar)
     add_test(NAME octagram_cli
       COMMAND ${CMAKE_COMMAND} -DBUILDER=$<TARGET_FILE:build_grammar>
               -DWORK=${PROJECT_BINARY_DIR}/cli-test
+              -DEXPECT_LOGGING=${ENABLE_LOGGING}
               -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.cmake)
   endif()
 endif()

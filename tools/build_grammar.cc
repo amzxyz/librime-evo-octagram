@@ -5,11 +5,11 @@
 #include <fstream>
 #include <cstdlib>
 #include <iostream>
+#include <random>
 #include <utf8.h>
 #include <rime/common.h>
 #include "gram_db.h"
 #include "gram_encoding.h"
-#include "octagram.h"
 
 using namespace rime;
 
@@ -23,6 +23,7 @@ struct Input {
 
 struct Options {
   vector<Input> inputs;
+  map<string, string> descriptions;
   string name = "wanxiang-lts";
   string language = "zh-hans";
 };
@@ -31,6 +32,8 @@ void Usage() {
   std::cout
       << "Usage: build_grammar -t FILE [-w WEIGHT] [-t FILE ...] [options]\n"
       << "  --section NAME     region name for subsequent -t files\n"
+      << "  -m TEXT            description of the current region\n"
+      << "  --inspect FILE      load a model and list regions in the log\n"
       << "  -t FILE            add an input file, in priority order\n"
       << "  -w WEIGHT          common frequency for the preceding -t file\n"
       << "                     with -w: key, optionally followed by ignored "
@@ -53,14 +56,14 @@ bool ParseWeight(const string& text, double* weight) {
   }
 }
 
-bool ParseOptions(int argc, char** argv, Options* options) {
+bool ParseOptions(const vector<string>& args, Options* options) {
   std::optional<string> name, language;
   string section = "default";
-  for (int i = 1; i < argc; ++i) {
-    const string flag = argv[i];
-    if (i + 1 == argc)
+  for (size_t i = 0; i < args.size(); ++i) {
+    const string& flag = args[i];
+    if (i + 1 == args.size())
       return false;
-    const string value = argv[++i];
+    const string& value = args[++i];
     if (flag == "-t") {
       options->inputs.push_back(
           {std::filesystem::u8path(value), std::nullopt, section});
@@ -74,6 +77,13 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->inputs.back().constant_weight = weight;
     } else if (flag == "--section") {
       section = value;
+    } else if (flag == "-m") {
+      auto [entry, inserted] = options->descriptions.emplace(section, value);
+      if (!inserted && entry->second != value) {
+        LOG(ERROR) << "conflicting descriptions for grammar section "
+                   << section;
+        return false;
+      }
     } else if (flag == "--name") {
       name = value;
     } else if (flag == "--language") {
@@ -93,6 +103,38 @@ bool ParseOptions(int argc, char** argv, Options* options) {
     if (input.file.empty() || input.section.empty() ||
         !utf8::is_valid(input.section.begin(), input.section.end()))
       return false;
+  return true;
+}
+
+bool WriteModel(const path& output, GramDb::Builder& builder) {
+  // Publish a complete file without resizing a model another process has
+  // mapped.
+  struct TemporaryDirectory {
+    path dir;
+    ~TemporaryDirectory() {
+      if (!dir.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(dir / "model.dlm", ignored);
+        std::filesystem::remove(dir, ignored);
+      }
+    }
+  } temporary;
+  std::random_device random;
+  for (int attempt = 0; attempt < 10 && temporary.dir.empty(); ++attempt) {
+    const path dir(output.parent_path() /
+                   (".grammar-" + std::to_string(random())));
+    if (std::filesystem::create_directory(dir))
+      temporary.dir = dir;
+  }
+  if (temporary.dir.empty())
+    return false;
+  const path temporary_model(temporary.dir / "model.dlm");
+  {
+    GramDb db(temporary_model);
+    if (!db.Build(builder) || !db.Save())
+      return false;
+  }
+  std::filesystem::rename(temporary_model, output);
   return true;
 }
 
@@ -152,20 +194,24 @@ bool ReadInput(const Input& source, GramDb::Source* data) {
 
 }  // namespace
 
-int main(int argc, char* argv[]) {
+int Run(const vector<string>& args) {
   std::ios::sync_with_stdio(false);
-  if (argc == 2 && string(argv[1]) == "--help") {
+  if (args.size() == 1 && args[0] == "--help") {
     Usage();
     return 0;
   }
   try {
+    if (args.size() == 2 && args[0] == "--inspect") {
+      GramDb db{path(args[1])};
+      return db.Load() ? 0 : 1;
+    }
     Options options;
-    if (!ParseOptions(argc, argv, &options)) {
+    if (!ParseOptions(args, &options)) {
       Usage();
       return 2;
     }
     const path output = std::filesystem::absolute(std::filesystem::u8path(
-        options.name + "-" + options.language + kGramDbType.suffix));
+        options.name + "-" + options.language + grammar::kModelSuffix));
     for (const auto& input : options.inputs) {
       if (std::filesystem::weakly_canonical(input.file) ==
               std::filesystem::weakly_canonical(output) ||
@@ -187,6 +233,9 @@ int main(int argc, char* argv[]) {
       GramDb::Source source;
       source.constant_weight = options.inputs[begin].constant_weight;
       source.name = options.inputs[begin].section;
+      if (auto it = options.descriptions.find(source.name);
+          it != options.descriptions.end())
+        source.description = it->second;
       for (size_t i = begin; i < end; ++i)
         if (!ReadInput(options.inputs[i], &source))
           return 1;
@@ -197,16 +246,29 @@ int main(int argc, char* argv[]) {
         return 1;
       begin = end;
     }
-    GramDb db(output);
-    if (!db.Build(builder) || !db.Save()) {
+    if (!WriteModel(output, builder)) {
       LOG(ERROR) << "cannot build grammar: " << output;
       return 1;
     }
     LOG(INFO) << "created: " << output;
-    std::cout << output.u8string() << '\n';
+    std::cout << output.to_utf8_string() << '\n';
     return 0;
   } catch (const std::exception& e) {
     LOG(ERROR) << "cannot build grammar: " << e.what();
     return 1;
   }
 }
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t* argv[]) {
+  vector<string> args;
+  args.reserve(argc - 1);
+  for (int i = 1; i < argc; ++i)
+    args.push_back(path{std::filesystem::path(argv[i])}.to_utf8_string());
+  return Run(args);
+}
+#else
+int main(int argc, char* argv[]) {
+  return Run(vector<string>(argv + 1, argv + argc));
+}
+#endif

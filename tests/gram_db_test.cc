@@ -84,9 +84,10 @@ TEST_F(GramDbTest, ConstantTerminalsContainNoIndividualScores) {
   ASSERT_TRUE(input.read(reinterpret_cast<char*>(&section), sizeof(section)));
   EXPECT_EQ(1u, metadata.section_count);
   EXPECT_EQ(Score(500000), section.constant_value);
+  EXPECT_DOUBLE_EQ(500000, section.constant_weight);
   Darts::DoubleArray trie;
   const size_t offset = sizeof(metadata) + sizeof(section) +
-                        ((metadata.names_bytes + 3) & ~uint64_t(3));
+                        ((metadata.text_bytes + 3) & ~uint64_t(3));
   ASSERT_EQ(
       0, trie.open(model.string().c_str(), "rb", offset, section.array_bytes));
   EXPECT_EQ(0, trie.exactMatchSearch<int>("ab"));
@@ -243,6 +244,85 @@ TEST_F(GramDbTest, ANameSelectsAllItsWeightGroupsAndRejectsInvalidNameData) {
   file.put('\0');
   file.close();
   EXPECT_FALSE(db.Load());
+}
+
+TEST_F(GramDbTest, RejectsModelsWithAnotherFormat) {
+  GramDb db(model);
+  GramDb::Builder builder;
+  ASSERT_TRUE(builder.Add(Fixed({"ab"}, 5000)));
+  ASSERT_TRUE(db.Build(builder));
+  ASSERT_TRUE(db.Save());
+  db.Close();
+  {
+    std::fstream file(model, std::ios::binary | std::ios::in | std::ios::out);
+    constexpr char format[32] = "Rime::DartsGrammar/4";
+    ASSERT_TRUE(file.write(format, sizeof(format)));
+  }
+  EXPECT_FALSE(db.Load());
+  EXPECT_FALSE(db.IsOpen());
+}
+
+TEST_F(GramDbTest, LastGrammarViewReleasesTheModelMapping) {
+  auto& deployer = Service::instance().deployer();
+  deployer.user_data_dir = std::filesystem::current_path();
+  deployer.shared_data_dir = deployer.user_data_dir;
+  const string language = model.stem().to_utf8_string();
+  Config config;
+  config.SetString("grammar/language", language);
+  auto names = New<ConfigList>();
+  names->Append(New<ConfigValue>("default"));
+  config.SetItem("grammar/contextual_sections", names);
+
+  OctagramComponent component;
+  for (int i = 0; i < 30; ++i) {
+    GramDb::Builder builder;
+    ASSERT_TRUE(builder.Add(Fixed({"ab"}, i == 0 ? 5000 : 500000)));
+    GramDb writer(model);
+    ASSERT_TRUE(writer.Build(builder));
+    ASSERT_TRUE(writer.Save());
+    writer.Close();
+    the<Octagram> sentence(component.Create(&config));
+    the<Octagram> contextual(component.CreateContextual(&config));
+    ASSERT_TRUE(contextual);
+    weak<const GramDb> opening = component.GetDb(language);
+    ASSERT_FALSE(opening.expired());
+    sentence.reset();
+    EXPECT_FALSE(opening.expired());
+    EXPECT_DOUBLE_EQ(
+        contextual->Query("a", "b", false),
+        double(Score(i == 0 ? 5000 : 500000)) / GramDb::kValueScale - 12);
+    contextual.reset();
+    ASSERT_TRUE(opening.expired());
+    EXPECT_TRUE(std::filesystem::remove(model));
+  }
+}
+
+TEST_F(GramDbTest, InvalidDartsTransitionsAreTreatedAsMisses) {
+  GramDb db(model);
+  GramDb::Builder builder;
+  ASSERT_TRUE(builder.Add(Fixed({"ab"}, 5000)));
+  ASSERT_TRUE(db.Build(builder));
+  ASSERT_TRUE(db.Save());
+  db.Close();
+  {
+    std::fstream file(model, std::ios::binary | std::ios::in | std::ios::out);
+    grammar::Metadata metadata;
+    ASSERT_TRUE(
+        file.read(reinterpret_cast<char*>(&metadata), sizeof(metadata)));
+    file.seekp(sizeof(metadata) + sizeof(grammar::SectionMetadata) +
+               ((metadata.text_bytes + 3) & ~uint64_t(3)));
+    const uint32_t invalid_root = 0x7ffffc00;
+    ASSERT_TRUE(file.write(reinterpret_cast<const char*>(&invalid_root),
+                           sizeof(invalid_root)));
+  }
+  ASSERT_TRUE(db.Load());
+  GramDb::Match result[GramDb::kMaxResults];
+  EXPECT_EQ(0, db.Lookup("a", "b", result));
+  EXPECT_EQ(0, db.Lookup("", "ab", result));
+  db.Close();
+  std::ofstream(model, std::ios::binary | std::ios::trunc).close();
+  EXPECT_FALSE(db.Load());
+  EXPECT_FALSE(db.IsOpen());
 }
 
 TEST_F(GramDbTest, DistinguishesSentenceAndContextWithoutACharacterLengthRule) {
