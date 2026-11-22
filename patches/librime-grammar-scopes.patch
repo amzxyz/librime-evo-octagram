@@ -1,7 +1,7 @@
 --- a/src/rime/gear/grammar.h
 +++ b/src/rime/gear/grammar.h
 @@ -10,6 +10,15 @@
- 
+
  class Grammar : public Class<Grammar, Config*> {
   public:
 +  class Component : public Class<Grammar, Config*>::Component {
@@ -34,22 +34,22 @@
 -                                      grammar_.get());
 +                                      contextual_grammar_.get());
    }
- 
+
   private:
 @@ -69,6 +69,7 @@
- 
+
    const Language* language_;
    the<Grammar> grammar_;
 +  the<Grammar> contextual_grammar_;
    Compare compare_;
  };
- 
+
 --- a/src/rime/gear/poet.cc
 +++ b/src/rime/gear/poet.cc
 @@ -71,9 +71,10 @@
- 
+
  const Line Line::kEmpty{nullptr, nullptr, 0, 0.0, 0};
- 
+
 -inline static Grammar* create_grammar(Config* config) {
 +inline static Grammar* create_grammar(Config* config, bool contextual = false) {
    if (auto* grammar = Grammar::Require("grammar")) {
@@ -65,7 +65,7 @@
        grammar_(create_grammar(config)),
 +      contextual_grammar_(create_grammar(config, true)),
        compare_(compare) {}
- 
+
  Poet::~Poet() {}
 @@ -189,6 +191,11 @@
  an<Sentence> Poet::MakeSentenceWithStrategy(const WordGraph& graph,
