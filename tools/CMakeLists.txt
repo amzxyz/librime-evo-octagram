@@ -10,6 +10,5 @@ if(NOT (WIN32 AND BUILD_SHARED_LIBS))
     $<TARGET_OBJECTS:rime-octagram-objs>)
   target_link_libraries(build_grammar
     ${rime_library}
-    ${rime_dict_library}
-    ${Marisa_LIBRARY})
+    ${rime_dict_library})
 endif()

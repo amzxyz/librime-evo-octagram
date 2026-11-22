@@ -1,0 +1,41 @@
+{
+  "scope": "named Darts sections and sentence/context separation",
+  "tests": {
+    "database": 10,
+    "poet_scope": 5,
+    "cli_integration": 1,
+    "result": "all passed"
+  },
+  "full_model_samples": {
+    "queries": 14915,
+    "equal_scores": 14915,
+    "equal_prefix_results": 14915
+  },
+  "reference": "canonical single Darts with identical weights and duplicate priority",
+  "model_images": [
+    {
+      "name": "four_char",
+      "array_bytes": 157300736,
+      "score": 131223,
+      "sha256": "7f4e7e91d38a565693a475426afe662675e05ad3aa74f99c3ff2abf78db88794"
+    },
+    {
+      "name": "five_char",
+      "array_bytes": 55553024,
+      "score": 223327,
+      "sha256": "b382cee7e762683514261b43c120a66816375dd06c2418b103038fe503bdf11b"
+    },
+    {
+      "name": "weighted",
+      "array_bytes": 127601664,
+      "score": -1,
+      "sha256": "55711c301a991317aa0d945c512d9c61ccaf2e0bbc14a1b037e4dc914990d4c1"
+    }
+  ],
+  "core_patch_base": "librime-evo fce2f8be22cc38ef75935a254e8d02a311624b5e",
+  "core_patch_check": "git apply --check passed",
+  "notes": [
+    "Production text corpora and binaries are not included.",
+    "These checks validate routing and score preservation, not generalization accuracy."
+  ]
+}

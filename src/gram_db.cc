@@ -1,60 +1,116 @@
 #include "gram_db.h"
-#include "gram_encoding.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <ostream>
-#include <streambuf>
-#include <marisa/iostream.h>
+#include <numeric>
+#include <utf8.h>
 
 namespace rime {
 namespace {
 
-constexpr char kGrammarFormat[] = "Rime::Grammar/MARISA/1";
-constexpr int kNumTries = 3;
-constexpr int kTrieConfig = kNumTries | MARISA_NORMAL_CACHE;
-// A final zero window permits the same unaligned read for every key ID.
-constexpr size_t kValuePadding = sizeof(uint64_t) - 1;
+// Older readers must reject a layout with a variable section table.
+constexpr char kGrammarFormat[] = "Rime::DartsGrammar/3";
+static_assert(sizeof(grammar::Metadata) == 48);
+static_assert(sizeof(grammar::SectionMetadata) == 24);
 
-uint32_t ReadValue(const char* values,
-                   size_t id,
-                   uint32_t bits,
-                   uint32_t mask) {
-  const size_t offset = id * bits;
-  uint64_t window;
-  std::memcpy(&window, values + offset / 8, sizeof(window));
-  return uint32_t(window >> (offset % 8)) & mask;
+bool ValidWeight(double weight) {
+  return std::isfinite(weight) && weight > 0;
 }
 
-void WriteValue(char* values,
-                size_t id,
-                uint32_t bits,
-                uint32_t mask,
-                uint32_t value) {
-  const size_t offset = id * bits;
-  uint64_t window;
-  std::memcpy(&window, values + offset / 8, sizeof(window));
-  window = (window & ~(uint64_t(mask) << (offset % 8))) |
-           (uint64_t(value) << (offset % 8));
-  std::memcpy(values + offset / 8, &window, sizeof(window));
+bool ValidKey(const string& key) {
+  return !key.empty() && key.find('\0') == string::npos;
 }
 
-// Write MARISA's image directly into the mapped file, without a temporary file
-// or a second full-size serialization buffer.
-class ImageBuffer : public std::streambuf {
- public:
-  ImageBuffer(char* data, size_t size) { setp(data, data + size); }
-  size_t written() const { return pptr() - pbase(); }
-};
+int Score(double weight) {
+  return (std::max)(0, int(std::log(weight) * GramDb::kValueScale));
+}
+
+int LookupTrie(const Darts::DoubleArray& trie,
+               const string& context,
+               const string& word,
+               GramDb::Match* results) {
+  size_t node = 0, consumed = 0;
+  if (trie.traverse(context.c_str(), node, consumed) == -2)
+    return 0;
+  const size_t count = trie.commonPrefixSearch(word.c_str(), results,
+                                               GramDb::kMaxResults, 0, node);
+  return int((std::min)(count, size_t(GramDb::kMaxResults)));
+}
 
 }  // namespace
 
+bool GramDb::Builder::Add(Source source) {
+  if (source.name.empty() || source.name.find('\0') != string::npos ||
+      !utf8::is_valid(source.name.begin(), source.name.end()))
+    return false;
+  const bool constant = source.constant_weight.has_value();
+  if (constant) {
+    if (!ValidWeight(*source.constant_weight) ||
+        !source.weighted_entries.empty())
+      return false;
+    for (const auto& key : source.constant_keys)
+      if (!ValidKey(key))
+        return false;
+  } else {
+    if (!source.constant_keys.empty())
+      return false;
+    for (const auto& [key, weight] : source.weighted_entries)
+      if (!ValidKey(key) || !ValidWeight(weight))
+        return false;
+  }
+  try {
+    auto section = std::make_unique<Section>();
+    section->name = std::move(source.name);
+    vector<const char*> keys;
+    vector<int> values;
+    if (constant) {
+      auto& data = source.constant_keys;
+      std::sort(data.begin(), data.end());
+      data.erase(std::unique(data.begin(), data.end()), data.end());
+      if (data.empty())
+        return true;
+      keys.reserve(data.size());
+      for (const auto& key : data)
+        keys.push_back(key.c_str());
+      // Zero terminals allow suffix sharing; the common score is stored once.
+      values.resize(keys.size(), 0);
+      section->constant_value = Score(*source.constant_weight);
+    } else {
+      auto& data = source.weighted_entries;
+      std::sort(data.begin(), data.end());
+      size_t count = 0;
+      for (size_t i = 0; i < data.size(); ++i) {
+        if (count && data[count - 1].first == data[i].first) {
+          data[count - 1].second = data[i].second;
+        } else {
+          if (count != i)
+            data[count] = std::move(data[i]);
+          ++count;
+        }
+      }
+      data.resize(count);
+      if (data.empty())
+        return true;
+      keys.reserve(data.size());
+      values.reserve(data.size());
+      for (const auto& [key, weight] : data) {
+        keys.push_back(key.c_str());
+        values.push_back(Score(weight));
+      }
+    }
+    section->trie.build(keys.size(), keys.data(), nullptr, values.data());
+    sections_.push_back(std::move(section));
+    return true;
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "cannot compile Darts grammar section: " << e.what();
+    return false;
+  }
+}
+
 void GramDb::Close() {
-  trie_.clear();
-  values_ = nullptr;
-  value_table_ = nullptr;
-  value_bits_ = 0;
-  value_mask_ = 0;
+  sections_by_name_.clear();
+  all_sections_.clear();
+  sections_.clear();
   MappedFile::Close();
 }
 
@@ -62,225 +118,203 @@ bool GramDb::Load() {
   Close();
   if (!OpenReadOnly())
     return false;
-  auto fail = [this]() {
-    LOG(ERROR) << "invalid MARISA grammar database: " << file_path();
+  auto invalid = [this]() {
+    LOG(ERROR) << "invalid multi-section Darts grammar: " << file_path();
     Close();
     return false;
   };
   if (file_size() < sizeof(grammar::Metadata))
-    return fail();
+    return invalid();
   const auto* metadata = Find<grammar::Metadata>(0);
-  if (std::memcmp(metadata->format, kGrammarFormat, sizeof(kGrammarFormat)))
-    return fail();
   const size_t payload = file_size() - sizeof(*metadata);
-  if (metadata->trie_size > payload || !metadata->key_count ||
-      !metadata->value_bits || metadata->value_bits > 31 ||
-      metadata->trie_size % alignof(int32_t) ||
-      (metadata->value_count &&
-       metadata->value_count != (uint64_t(1) << metadata->value_bits)) ||
-      metadata->value_count > SIZE_MAX / sizeof(int32_t) ||
-      metadata->key_count > (SIZE_MAX - 7) / metadata->value_bits)
-    return fail();
-  const size_t value_size =
-      (metadata->key_count * metadata->value_bits + 7) / 8;
-  const size_t table_size = metadata->value_count * sizeof(int32_t);
-  const size_t remaining = payload - metadata->trie_size;
-  if (remaining < table_size || remaining - table_size < kValuePadding ||
-      remaining - table_size - kValuePadding != value_size)
-    return fail();
-  try {
-    const char* image = Find<char>(sizeof(*metadata));
-    trie_.map(image, metadata->trie_size);
-    if (trie_.num_keys() != metadata->key_count)
-      return fail();
-    value_table_ =
-        metadata->value_count
-            ? reinterpret_cast<const int32_t*>(image + metadata->trie_size)
-            : nullptr;
-    values_ = image + metadata->trie_size + table_size;
-    value_bits_ = uint32_t(metadata->value_bits);
-    value_mask_ = (uint32_t(1) << value_bits_) - 1;
-  } catch (const std::exception& e) {
-    LOG(ERROR) << "cannot map grammar database: " << e.what();
-    return fail();
+  if (std::memcmp(metadata->format, kGrammarFormat, sizeof(kGrammarFormat)) ||
+      !metadata->section_count ||
+      metadata->section_count > payload / sizeof(grammar::SectionMetadata))
+    return invalid();
+  const size_t count = size_t(metadata->section_count);
+  const auto* table = Find<grammar::SectionMetadata>(sizeof(*metadata));
+  const size_t table_end = sizeof(*metadata) + count * sizeof(*table);
+  if (metadata->names_bytes > SIZE_MAX - 3 ||
+      metadata->names_bytes > file_size() - table_end)
+    return invalid();
+  const size_t padded_names = (size_t(metadata->names_bytes) + 3) & ~size_t(3);
+  if (padded_names > file_size() - table_end)
+    return invalid();
+  size_t remaining = file_size() - table_end - padded_names;
+  size_t names_remaining = size_t(metadata->names_bytes);
+  const char* names = Find<char>(table_end);
+  const Darts::DoubleArray empty;
+  for (size_t i = 0; i < count; ++i) {
+    if (!table[i].array_bytes || table[i].array_bytes > remaining ||
+        table[i].array_bytes % empty.unit_size() ||
+        table[i].constant_value < -1 ||
+        table[i].constant_value > std::numeric_limits<int>::max() ||
+        !table[i].name_bytes || table[i].name_bytes > names_remaining ||
+        std::memchr(names, '\0', size_t(table[i].name_bytes)) ||
+        !utf8::is_valid(names, names + table[i].name_bytes))
+      return invalid();
+    names += table[i].name_bytes;
+    names_remaining -= size_t(table[i].name_bytes);
+    remaining -= size_t(table[i].array_bytes);
   }
-  return true;
+  if (remaining || names_remaining)
+    return invalid();
+  try {
+    const char* image = Find<char>(table_end + padded_names);
+    names = Find<char>(table_end);
+    sections_.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+      auto section = std::make_unique<Section>();
+      section->name.assign(names, size_t(table[i].name_bytes));
+      names += table[i].name_bytes;
+      section->constant_value = int(table[i].constant_value);
+      section->trie.set_array(image,
+                              table[i].array_bytes / section->trie.unit_size());
+      image += table[i].array_bytes;
+      sections_.push_back(std::move(section));
+    }
+    IndexSections();
+    return true;
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "cannot load Darts grammar sections: " << e.what();
+    Close();
+    return false;
+  }
 }
 
 bool GramDb::Save() {
-  // Build allocates the exact serialized size; shrinking would invalidate the
-  // mapped trie and its value array.
-  return IsOpen() && values_ && Flush();
-}
-
-bool GramDb::Builder::Add(const string& key, double weight) {
-  if (key.empty() || !std::isfinite(weight) || weight <= 0) {
-    LOG(ERROR)
-        << "grammar entries require nonempty keys and positive finite weights";
-    return false;
-  }
-  keys_.push_back(
-      key.data(), key.size(),
-      static_cast<float>(
-          (std::min)(weight, double(std::numeric_limits<float>::max()))));
-  values_.push_back(
-      uint32_t((std::max)(0, int32_t(std::log(weight) * kValueScale))));
-  return true;
-}
-
-bool GramDb::Build(const vector<pair<string, double>>& data) {
-  Close();
-  try {
-    Builder builder;
-    for (const auto& [key, weight] : data)
-      if (!builder.Add(key, weight))
-        return false;
-    return Build(builder);
-  } catch (const std::exception& e) {
-    LOG(ERROR) << "cannot build grammar database: " << e.what();
-    return false;
-  }
+  return IsOpen() && !sections_.empty() && Flush();
 }
 
 bool GramDb::Build(Builder& builder) {
   Close();
-  if (builder.keys_.empty() || builder.keys_.size() != builder.values_.size())
+  const size_t count = builder.sections_.size();
+  if (!count || count > (SIZE_MAX - sizeof(grammar::Metadata)) /
+                            sizeof(grammar::SectionMetadata))
     return false;
-  try {
-    marisa::Keyset keys;
-    keys.swap(builder.keys_);
-    vector<uint32_t> input_values;
-    input_values.swap(builder.values_);
-    marisa::Trie built;
-    built.build(keys, kTrieConfig);
-    const size_t trie_size = built.io_size();
-    // MARISA assigns IDs back to the input keyset. Duplicate entries share an
-    // ID; retain their maximum weight without a second round of trie lookups.
-    vector<uint32_t> scores(built.num_keys());
-    uint32_t maximum_value = 0;
-    for (size_t i = 0; i < input_values.size(); ++i) {
-      const uint32_t score = input_values[i];
-      scores[keys[i].id()] = (std::max)(scores[keys[i].id()], score);
-      maximum_value = (std::max)(maximum_value, score);
-    }
-    // Key IDs and scores are now associated; release the input buffers before
-    // allocating the output image and its shared score table.
-    keys.clear();
-    vector<uint32_t>().swap(input_values);
-    uint32_t bits = 1;
-    while (maximum_value >> bits)
-      ++bits;
-    if (built.num_keys() > (SIZE_MAX - 7) / bits)
+  size_t bytes =
+      sizeof(grammar::Metadata) + count * sizeof(grammar::SectionMetadata);
+  size_t names_bytes = 0;
+  for (const auto& section : builder.sections_) {
+    if (section->name.size() > SIZE_MAX - names_bytes)
       return false;
-    const size_t direct_size = (built.num_keys() * bits + 7) / 8;
-    // Repeated scores can be represented by a small shared table. Compare
-    // complete encoded sizes, including its padding, before choosing it.
-    auto distinct = scores;
-    std::sort(distinct.begin(), distinct.end());
-    distinct.erase(std::unique(distinct.begin(), distinct.end()),
-                   distinct.end());
-    uint32_t table_bits = 1;
-    while ((distinct.size() - 1) >> table_bits)
-      ++table_bits;
-    size_t value_count = 0;
-    if (table_bits < bits && table_bits < sizeof(size_t) * 8 - 2) {
-      const size_t count = size_t(1) << table_bits;
-      const size_t index_size = (built.num_keys() * table_bits + 7) / 8;
-      if (index_size < direct_size &&
-          count * sizeof(int32_t) < direct_size - index_size) {
-        value_count = count;
-        bits = table_bits;
-      }
-    }
-    const uint32_t mask = (uint32_t(1) << bits) - 1;
-    const size_t value_size = (built.num_keys() * bits + 7) / 8;
-    const size_t table_size = value_count * sizeof(int32_t);
-    if (trie_size > SIZE_MAX - sizeof(grammar::Metadata) - kValuePadding ||
-        table_size >
-            SIZE_MAX - sizeof(grammar::Metadata) - kValuePadding - trie_size ||
-        value_size > SIZE_MAX - sizeof(grammar::Metadata) - kValuePadding -
-                         trie_size - table_size)
+    names_bytes += section->name.size();
+  }
+  if (names_bytes > SIZE_MAX - 3)
+    return false;
+  const size_t padded_names = (names_bytes + 3) & ~size_t(3);
+  if (padded_names > SIZE_MAX - bytes)
+    return false;
+  bytes += padded_names;
+  for (const auto& section : builder.sections_) {
+    if (section->trie.total_size() > SIZE_MAX - bytes)
       return false;
-    const size_t size = sizeof(grammar::Metadata) + trie_size + table_size +
-                        value_size + kValuePadding;
-    if (!Create(size))
-      return false;
-    auto* metadata = Allocate<grammar::Metadata>();
-    auto* image = Allocate<char>(trie_size);
-    auto* value_table = value_count ? Allocate<int32_t>(value_count) : nullptr;
-    auto* values = Allocate<char>(value_size + kValuePadding);
-    if (!metadata || !image || !values || (value_count && !value_table)) {
-      Close();
-      return false;
-    }
-    if (value_table)
-      std::copy(distinct.begin(), distinct.end(), value_table);
-    ImageBuffer buffer(image, trie_size);
-    std::ostream stream(&buffer);
-    marisa::write(stream, built);
-    if (!stream || buffer.written() != trie_size) {
-      Close();
-      return false;
-    }
-    for (size_t i = 0; i < scores.size(); ++i) {
-      const uint32_t value =
-          value_table ? uint32_t(std::lower_bound(distinct.begin(),
-                                                  distinct.end(), scores[i]) -
-                                 distinct.begin())
-                      : scores[i];
-      WriteValue(values, i, bits, mask, value);
-    }
-    metadata->trie_size = trie_size;
-    metadata->key_count = built.num_keys();
-    metadata->value_bits = bits;
-    metadata->value_count = value_count;
-    std::memcpy(metadata->format, kGrammarFormat, sizeof(kGrammarFormat));
-    trie_.map(image, trie_size);
-    values_ = values;
-    value_table_ = value_table;
-    value_bits_ = bits;
-    value_mask_ = mask;
-  } catch (const std::exception& e) {
-    LOG(ERROR) << "cannot build grammar database: " << e.what();
+    bytes += section->trie.total_size();
+  }
+  sections_.swap(builder.sections_);
+  if (!Create(bytes)) {
     Close();
     return false;
   }
+  auto* metadata = Allocate<grammar::Metadata>();
+  std::memcpy(metadata->format, kGrammarFormat, sizeof(kGrammarFormat));
+  metadata->section_count = count;
+  metadata->names_bytes = names_bytes;
+  auto* table = Allocate<grammar::SectionMetadata>(count);
+  char* names = Allocate<char>(padded_names);
+  for (size_t i = 0; i < count; ++i) {
+    auto& section = *sections_[i];
+    const size_t size = section.trie.total_size();
+    table[i] = {size, section.constant_value, section.name.size()};
+    std::memcpy(names, section.name.data(), section.name.size());
+    names += section.name.size();
+    char* image = Allocate<char>(size);
+    std::memcpy(image, section.trie.array(), size);
+    section.trie.set_array(image, section.trie.size());
+  }
+  IndexSections();
+  return true;
+}
+
+void GramDb::IndexSections() {
+  all_sections_.resize(sections_.size());
+  std::iota(all_sections_.begin(), all_sections_.end(), size_t(0));
+  sections_by_name_.clear();
+  for (size_t i = 0; i < sections_.size(); ++i)
+    sections_by_name_[sections_[i]->name].push_back(i);
+}
+
+bool GramDb::SelectSections(const vector<string>& names,
+                            SectionList* selected) const {
+  if (!selected)
+    return false;
+  selected->clear();
+  if (!IsOpen())
+    return false;
+  for (const auto& name : names) {
+    auto found = sections_by_name_.find(name);
+    if (found == sections_by_name_.end()) {
+      LOG(ERROR) << "unknown grammar section '" << name << "' in "
+                 << file_path();
+      selected->clear();
+      return false;
+    }
+    selected->insert(selected->end(), found->second.begin(),
+                     found->second.end());
+  }
+  // Selection order must not change the priority stored in the model.
+  std::sort(selected->begin(), selected->end());
+  selected->erase(std::unique(selected->begin(), selected->end()),
+                  selected->end());
   return true;
 }
 
 int GramDb::Lookup(const string& context,
                    const string& word,
                    Match results[kMaxResults]) const {
-  if (!IsOpen() || !values_ || word.empty() || !results)
+  return Lookup(context, word, results, all_sections_);
+}
+
+int GramDb::Lookup(const string& context,
+                   const string& word,
+                   Match results[kMaxResults],
+                   const SectionList& selected) const {
+  if (!IsOpen() || selected.empty() || word.empty() || !results)
     return 0;
-  char buffer[grammar::kMaxQueryLength * 8];
-  string overflow;
-  const char* query;
-  size_t length;
-  if (context.size() <= sizeof(buffer) &&
-      word.size() <= sizeof(buffer) - context.size()) {
-    std::memcpy(buffer, context.data(), context.size());
-    std::memcpy(buffer + context.size(), word.data(), word.size());
-    query = buffer;
-    length = context.size() + word.size();
-  } else {
-    overflow = context;
-    overflow += word;
-    query = overflow.data();
-    length = overflow.size();
+  if (selected.size() == 1) {
+    if (selected[0] >= sections_.size())
+      return 0;
+    const auto& section = *sections_[selected[0]];
+    const int count = LookupTrie(section.trie, context, word, results);
+    if (section.constant_value >= 0)
+      for (int i = 0; i < count; ++i)
+        results[i].value = section.constant_value;
+    return count;
   }
-  // The trie is shared and immutable. Reuse only per-thread search state;
-  // set_query resets it even when consecutive calls use different databases.
-  thread_local marisa::Agent agent;
-  agent.set_query(query, length);
   int count = 0;
-  while (count < kMaxResults && trie_.common_prefix_search(agent)) {
-    if (agent.key().length() <= context.size())
-      continue;
-    const uint32_t value =
-        ReadValue(values_, agent.key().id(), value_bits_, value_mask_);
-    results[count++] = {value_table_ ? value_table_[value] : int(value),
-                        agent.key().length() - context.size()};
+  Match current[kMaxResults];
+  for (size_t index : selected) {
+    if (index >= sections_.size())
+      return 0;
+    const auto& section = sections_[index];
+    const int matches = LookupTrie(section->trie, context, word, current);
+    for (int i = 0; i < matches; ++i) {
+      Match match = current[i];
+      if (section->constant_value >= 0)
+        match.value = section->constant_value;
+      int position = 0;
+      while (position < count && results[position].length < match.length)
+        ++position;
+      // The last selected section wins for the same key, regardless of weight.
+      if (position < count && results[position].length == match.length) {
+        results[position] = match;
+      } else if (position < kMaxResults) {
+        for (int j = (std::min)(count, kMaxResults - 1); j > position; --j)
+          results[j] = results[j - 1];
+        results[position] = match;
+        count = (std::min)(count + 1, kMaxResults);
+      }
+    }
   }
   return count;
 }

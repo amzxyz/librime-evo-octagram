@@ -10,8 +10,7 @@ string encode(const char* begin, const char* end) {
   char* e = encoded_str;
   string result;
   for (auto p = begin; p < end;) {
-    // One Unicode code point needs at most four encoded bytes. Keep short
-    // queries on the stack, and append chunks when compiling longer keys.
+    // Reserve enough space for one complete code point before encoding it.
     if (sizeof(encoded_str) - size_t(e - encoded_str) < 4) {
       result.append(encoded_str, e);
       e = encoded_str;

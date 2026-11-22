@@ -18,15 +18,19 @@ class OctagramComponent;
 
 class Octagram : public Grammar {
  public:
-  Octagram(Config* config, OctagramComponent* component);
+  Octagram(Config* config,
+           OctagramComponent* component,
+           const vector<string>* sections = nullptr);
   virtual ~Octagram();
   double Query(const string& context,
                const string& word,
                bool is_rear) override;
 
  private:
+  friend class OctagramComponent;
   the<GrammarConfig> config_;
   GramDb* db_ = nullptr;
+  vector<size_t> sections_;
 };
 
 class OctagramComponent : public Grammar::Component {
@@ -35,6 +39,7 @@ class OctagramComponent : public Grammar::Component {
   virtual ~OctagramComponent();
 
   Octagram* Create(Config* config) override;
+  Octagram* CreateContextual(Config* config) override;
 
   GramDb* GetDb(const string& language);
 
