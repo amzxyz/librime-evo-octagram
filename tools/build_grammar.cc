@@ -7,7 +7,6 @@
 #include <iostream>
 #include <utf8.h>
 #include <rime/common.h>
-#include <rime/config.h>
 #include "gram_db.h"
 #include "gram_encoding.h"
 #include "octagram.h"
@@ -31,8 +30,6 @@ struct Options {
 void Usage() {
   std::cout
       << "Usage: build_grammar -t FILE [-w WEIGHT] [-t FILE ...] [options]\n"
-      << "       build_grammar --config model.yaml [--name NAME --language "
-         "LANG]\n"
       << "  --section NAME     region name for subsequent -t files\n"
       << "  -t FILE            add an input file, in priority order\n"
       << "  -w WEIGHT          common frequency for the preceding -t file\n"
@@ -56,68 +53,15 @@ bool ParseWeight(const string& text, double* weight) {
   }
 }
 
-bool ReadBuildConfig(const path& file, Options* options) {
-  Config config;
-  if (!config.LoadFromFile(file))
-    return false;
-  for (const auto& item : {std::make_pair("name", &options->name),
-                           std::make_pair("language", &options->language)})
-    if (!config.IsNull(item.first) &&
-        !config.GetString(item.first, item.second))
-      return false;
-  auto sections = config.GetList("sections");
-  if (!sections || !sections->size()) {
-    LOG(ERROR) << file << ": sections must be a nonempty list";
-    return false;
-  }
-  const path parent = std::filesystem::absolute(file).parent_path();
-  for (size_t i = 0; i < sections->size(); ++i) {
-    auto section = As<ConfigMap>(sections->GetAt(i));
-    auto name = section ? section->GetValue("name") : nullptr;
-    auto files = section ? As<ConfigList>(section->Get("files")) : nullptr;
-    string label;
-    if (!name || !name->GetString(&label) || label.empty() || !files ||
-        !files->size()) {
-      LOG(ERROR) << file << ": each section requires name and a files list";
-      return false;
-    }
-    std::optional<double> weight;
-    if (section->HasKey("weight")) {
-      auto value = section->GetValue("weight");
-      string text;
-      double parsed;
-      if (!value || !value->GetString(&text) || !ParseWeight(text, &parsed)) {
-        LOG(ERROR) << file << ": invalid weight for section " << label;
-        return false;
-      }
-      weight = parsed;
-    }
-    for (size_t j = 0; j < files->size(); ++j) {
-      auto value = files->GetValueAt(j);
-      string text;
-      if (!value || !value->GetString(&text) || text.empty()) {
-        LOG(ERROR) << file << ": files must contain nonempty paths";
-        return false;
-      }
-      options->inputs.push_back(
-          {parent / std::filesystem::u8path(text), weight, label});
-    }
-  }
-  return true;
-}
-
 bool ParseOptions(int argc, char** argv, Options* options) {
-  std::optional<path> config_file;
   std::optional<string> name, language;
   string section = "default";
-  bool manual_sources = false;
   for (int i = 1; i < argc; ++i) {
     const string flag = argv[i];
     if (i + 1 == argc)
       return false;
     const string value = argv[++i];
     if (flag == "-t") {
-      manual_sources = true;
       options->inputs.push_back(
           {std::filesystem::u8path(value), std::nullopt, section});
     } else if (flag == "-w") {
@@ -129,10 +73,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
         return false;
       options->inputs.back().constant_weight = weight;
     } else if (flag == "--section") {
-      manual_sources = true;
       section = value;
-    } else if (flag == "--config") {
-      config_file = std::filesystem::u8path(value);
     } else if (flag == "--name") {
       name = value;
     } else if (flag == "--language") {
@@ -141,9 +82,6 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       return false;
     }
   }
-  if (config_file &&
-      (manual_sources || !ReadBuildConfig(*config_file, options)))
-    return false;
   if (name)
     options->name = *name;
   if (language)
