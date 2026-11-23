@@ -46,6 +46,8 @@ build_grammar --section weighted -m "保留各词原有频次" -t precise.txt \
 | `collocations` | `four.txt`、`extra.txt` | 统一频次 500000 |
 | `long_phrases` | `long.txt` | 统一频次 5000000000 |
 
+分区名、文件名、权重都是写入时的自定义项，并不限定
+
 **输入格式**
 
 公共权重文件（每行一个词条，可附带原频次）：
