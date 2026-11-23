@@ -93,6 +93,41 @@ build_grammar --inspect wanxiang-lts-zh-hans.dlm
 grammar section[1] name="collocations" weight=500000 score=131223 description="四字 2+2 搭配，用于联想"
 ```
 
+### Windows 使用 build_grammar.exe 构建模型
+
+在 Windows 上使用 Evo 的 CMake 多配置构建时，可执行文件通常位于 `build\bin\Release\build_grammar.exe`；如果使用安装步骤，则位于安装前缀的 `bin` 目录。具体以实际编译和安装路径为准。
+
+下面以 PowerShell 为例，从 Evo 仓库根目录运行（路径中的 `D:\模型` 请替换成实际词库目录）：
+
+```powershell
+.\build\bin\Release\build_grammar.exe --help
+.\build\bin\Release\build_grammar.exe --section weighted -m "综合区" -t "D:\模型\综合.txt" --section collocations -m "2+2 派生片段" -t "D:\模型\四字.txt" -w 500000 --section long_phrases -m "5字短语" -t "D:\模型\五字.txt" -w 5000000000 --name wanxiang-lts --language zh-hans
+```
+
+输入 TXT 使用 UTF-8 文本，每行一条数据。逐词权重分区必须使用 `词条<TAB>正数频次`；公共权重分区可只写词条，也可带一列原频次（实际采用命令行指定的 `-w` 权重）。例如：
+
+```text
+# 综合.txt：两个字段用 Tab 分隔
+获得了加成	12345
+历史文化	678
+```
+
+```text
+# 四字.txt、五字.txt：每行一条
+历史文化
+历史文化名城
+```
+
+输出文件为 `wanxiang-lts-zh-hans.dlm`，保存在**PowerShell 的当前工作目录**，并非必然保存在 EXE 所在目录。例如上述命令在仓库根目录执行，模型就生成在仓库根目录。
+
+构建完成后可查看模型中保存的分区名称、权重及中文用途说明：
+
+```powershell
+.\build\bin\Release\build_grammar.exe --inspect .\wanxiang-lts-zh-hans.dlm
+```
+
+如将 `build_grammar.exe` 所在目录加入 Windows `PATH`，后续也可以直接使用 `build_grammar --help` 等命令。构建后的 `.dlm` 可按下文 Rime 配置说明安装。
+
 ## Rime 配置
 
 将 `wanxiang-lts-zh-hans.dlm` 放入 Rime 用户目录。`grammar/language` 填模型文件名，省略 `.dlm`。匹配参数和翻译器开关沿用万象方案默认值，下面的分区列表对应上面的构建示例。
