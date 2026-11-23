@@ -116,7 +116,14 @@ translator:
 
 ## 集成与测试
 
-Evo 将本项目固定在 `plugins/octagram`。在 Evo 根目录执行 `git submodule update --init --recursive`，配置 CMake 后构建 `build_grammar` 目标。该程序生成 `Rime::EvoGrammar/2` 格式的 `.dlm` 文件。
+Evo 的 macOS、Windows CI 和 Docker 构建会安装此插件。本地可在 Evo 根目录按需安装，构建器生成 `Rime::EvoGrammar/2` 格式的 `.dlm` 文件。
+
+```sh
+git submodule update --init --recursive
+bash install-plugins.sh amzxyz/librime-evo-octagram
+RIME_PLUGINS=amzxyz/librime-evo-octagram cmake -S . -B build
+cmake --build build --target build_grammar -j2
+```
 
 ```sh
 ctest -R 'octagram_test|octagram_cli|grammar_scope_test' --output-on-failure
