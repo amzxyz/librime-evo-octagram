@@ -2,6 +2,7 @@
 // Copyright RIME Developers
 //
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <cstdlib>
 #include <iostream>
@@ -16,7 +17,7 @@ using namespace rime;
 namespace {
 
 struct Input {
-  path file;
+  std::filesystem::path file;
   std::optional<double> constant_weight;
   string section = "default";
 };
