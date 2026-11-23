@@ -114,17 +114,16 @@ translator:
 
 省略 `contextual_sections` 或将其设为 `[]` 时，前文调频关闭。如果列表引用了文件里不存在的名称，加载时会报错并禁用前文调频。可以用 `--inspect` 核对名称。
 
-## 集成与测试
+## 安装插件和构建工具
 
-Evo 的 macOS、Windows CI 和 Docker 构建会安装此插件。本地可在 Evo 根目录按需安装，构建器生成 `Rime::EvoGrammar/2` 格式的 `.dlm` 文件。
+Evo 的 macOS、Windows CI 和 Docker 构建会安装此插件。本地可在 Evo 根目录按需安装。
 
 ```sh
 git submodule update --init --recursive
 bash install-plugins.sh amzxyz/librime-evo-octagram
-RIME_PLUGINS=amzxyz/librime-evo-octagram cmake -S . -B build
+RIME_PLUGINS=amzxyz/librime-evo-octagram cmake -S . -B build -DBUILD_TOOLS=ON
 cmake --build build --target build_grammar -j2
+./build/bin/build_grammar --help
 ```
 
-```sh
-ctest -R 'octagram_test|octagram_cli|grammar_scope_test' --output-on-failure
-```
+构建器位于 Evo 的 `build/bin/build_grammar`，生成 `Rime::EvoGrammar/2` 格式的 `.dlm` 文件。Windows 多配置构建的工具在 `build/bin/Release/build_grammar.exe`。安装 Evo 时，构建器随其他工具安装到同一个 `bin` 目录。
